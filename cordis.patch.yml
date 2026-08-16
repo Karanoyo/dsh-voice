@@ -1,0 +1,6 @@
+# dsh-voice bundle for DeepSeek Harness (dsh).
+# Client-only: the browser half (client.js) renders the mic button and runs
+# Whisper in-browser. The node half (host.js) only declares the plugin identity.
+- insert:
+    - id: dsh-voice
+      name: dsh-voice
