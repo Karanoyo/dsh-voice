@@ -1,7 +1,7 @@
 {
   "name": "dsh-voice",
   "version": "0.1.0",
-  "description": "Voice-to-text for DeepSeek Harness: a microphone button in the composer that transcribes locally with Whisper (small), styled to match the Liquid Glass theme.",
+  "description": "语音转文字插件（DeepSeek Harness / dsh）：输入框右下角麦克风按钮，三种识别引擎（浏览器自带 / 讯飞 / 本地 Whisper）可切换。",
   "license": "MIT",
   "type": "module",
   "main": "./host.js",
@@ -14,10 +14,26 @@
     "host.js",
     "client.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/charlie-pan/dsh-voice.git"
+  },
+  "homepage": "https://github.com/charlie-pan/dsh-voice#readme",
   "engines": { "node": ">=20" },
-  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "speech-to-text", "voice", "whisper"],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "speech-to-text",
+    "voice",
+    "whisper",
+    "xfyun",
+    "webspeech",
+    "voice-input"
+  ],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": { "platform": "web" }
