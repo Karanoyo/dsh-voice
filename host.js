@@ -39,6 +39,15 @@ const XFYUN = {
   apiSecret: process.env.XFYUN_APISECRET || XFYUN_SECRET.apiSecret || '',
 }
 
+// ---------------------------------------------------------------------
+// ⏱️ 静音检测增强：讯飞后端点静音毫秒数（官方默认 2000，允许范围 0-10000）。
+// 静音超过该值引擎即断句。旧版为防「中途停顿丢字」拉满到上限 10000ms，
+// 代价是长静音/杂音期间云端持续解码，把呼吸声与底噪识别成「嗯/啊/呃」。
+// 现在前端已用 VAD/能量门控裁掉静音与噪声，收回 3000ms 即可：
+// 中途停顿仍远低于断句线（不会丢字），残余噪声不再被长时间硬解。
+// ---------------------------------------------------------------------
+const XFYUN_VAD_EOS = 3000
+
 const HF_BASE = 'https://hf-mirror.com'
 const HF_ROUTE = '/dsh-voice/hf'
 const ASR_ROUTE = '/dsh-voice/asr'
@@ -124,7 +133,11 @@ function iatBusiness() {
     language: 'zh_cn',
     domain: 'iat',
     accent: 'mandarin',
-    vad_eos: 10000,
+    // ⏱️ 静音后端点检测：改用头部常量 XFYUN_VAD_EOS（默认 3000ms，取舍见文件顶部注释）。
+    // 配合前端静音检测增强：长静音已在浏览器端裁掉，无需再用上限 10000ms 硬扛，
+    // 残余噪声不会被云端长时间持续解码成「嗯/啊」。
+    // 严禁添加未知字段（如 bos/vad_bos/eos），否则讯飞云端会报 10163 参数验证错误
+    vad_eos: XFYUN_VAD_EOS,
     dwa: 'wpgs',
     ptt: 0,
   }
@@ -137,11 +150,10 @@ function iatTranscribe(pcm) {
   return new Promise((resolve, reject) => {
     let ws
     let settled = false
-    // 讯飞会把长音频按 VAD 切成多段：每段开始时文本会"重置"（大幅变短）。
-    // 用 segments 收集每一段的最终文本，结束时按顺序拼接。
-    let segments = []
-    let current = ''
-    const timer = setTimeout(() => finish(new Error('讯飞识别超时')), 30000)
+    // 🎙️ 讯飞标准分句容器：按句子序号 sn 严格隔离存储每句文字，绝不抛弃停顿前后的任何一段文本
+    const 分句字典 = {}
+    // 总超时延长至 60 秒（覆盖讯飞单次最大允许时长）
+    const timer = setTimeout(() => finish(new Error('讯飞识别超时')), 60000)
 
     function finish(err, text) {
       if (settled) return
@@ -201,26 +213,29 @@ function iatTranscribe(pcm) {
         const data = msg.data
         if (!data) return
         const result = data.result
-        if (result && Array.isArray(result.ws)) {
-          const joined = result.ws
-            .map((item) => (item.cw || []).map((c) => c.w || '').join(''))
-            .join('')
-          if (joined) {
-            if (!current || joined.startsWith(current) || joined.length >= current.length / 2) {
-              // 同一段：文本在增长或 wpgs 修正
-              current = joined
-            } else {
-              // 文本大幅缩短 = 新的一段开始了，先收下上一段
-              segments.push(current)
-              current = joined
+        if (result) {
+          const 句号 = typeof result.sn === 'number' ? result.sn : 1
+          // 如果开启动态修正并且指示替换前置范围
+          if (result.pgs === 'rpl' && Array.isArray(result.rg)) {
+            for (let r = result.rg[0]; r <= result.rg[1]; r++) {
+              delete 分句字典[r]
             }
           }
+          let 本片文字 = ''
+          if (Array.isArray(result.ws)) {
+            本片文字 = result.ws
+              .map((item) => (item.cw || []).map((c) => c.w || '').join(''))
+              .join('')
+          }
+          // 在同一个 sn 句子内累加文字
+          分句字典[句号] = (分句字典[句号] || '') + 本片文字
         }
-        // 最终消息（ls=true 或 status=2）的 ws 常是空词（w:""），
-        // 完整文本散布在之前的消息里——收尾时把最后一段也拼上。
+
+        // 最终消息（ls=true 或 status=2）到达，将所有分句按序号升序完整拼装
         if ((result && result.ls === true) || (data && data.status === 2)) {
-          if (current) segments.push(current)
-          finish(null, segments.join(''))
+          const 排序序号列表 = Object.keys(分句字典).map(Number).sort((a, b) => a - b)
+          const 完整合并文本 = 排序序号列表.map((k) => 分句字典[k] || '').join('')
+          finish(null, 完整合并文本)
         }
       } catch (err) {
         finish(err)
@@ -266,6 +281,14 @@ async function asrHandler(req, res) {
 }
 
 export function apply(ctx) {
+  // 🔍 host 侧配置自检日志：浏览器控制台看不到这里，去 dsh 服务端日志查看本行。
+  // 凭据状态只报「已配置/未配置」，绝不打印密钥内容本身。
+  const credOk = !!(XFYUN.appId && XFYUN.apiKey && XFYUN.apiSecret)
+  console.log(
+    '[dsh-voice] 🧪 host 配置: 讯飞凭据 ' + (credOk ? '✅已配置' : '❌未配置（xfyun 引擎将不可用）') +
+    ' | 讯飞vad_eos=' + XFYUN_VAD_EOS + 'ms' +
+    ' | HF代理路由=' + HF_ROUTE + ' | 讯飞识别路由=' + ASR_ROUTE,
+  )
   const disposeHf = ctx.webServer.register({ kind: 'prefix', path: HF_ROUTE, handler: hfHandler })
   const disposeAsr = ctx.webServer.register({ kind: 'exact', path: ASR_ROUTE, handler: asrHandler })
   // ctx.effect 的回调体会被立即执行，必须「返回清理函数」，

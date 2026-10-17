@@ -5,6 +5,9 @@
 <p align="center">
   <b>点一下说话 · 再点一下出字 · 三种识别引擎可切换 · 液态玻璃风格</b>
 </p>
+<img src="./images/01.png" style="zoom: 80%;" /> 
+
+<img src="./images/02.png" style="zoom: 80%;" /> 
 
 ## ✨ 功能特性
 
@@ -18,6 +21,8 @@
 - 🎚️ **麦克风设备选择下拉框**：列出所有音频输入设备，选择持久化（`localStorage`），不再被浏览器的默认麦克风坑（Web Speech 引擎不支持指定设备，该模式下自动隐藏）；
 - 📈 **自动增益**：安静麦克风录出的低音量语音会自动放大再识别，避免"没检测到声音"；
 - 🔇 **静音/过短拦截**：完全无声或不足 0.25 秒的录音直接本地拦截，不浪费云端配额；
+- 🧠 **Silero VAD 静音检测增强**：录音先用浏览器内神经网络 VAD（约 2MB 模型，缓存后离线可用）判定「真的在说话」，只把语音段送识别——呼吸声/风扇底噪不再被识别成「嗯嗯啊啊」；VAD 加载失败自动降级为零依赖的能量门控；
+- 🕳️ **语气词保险网**：识别结果整条只由「嗯/啊/哦/哈…」构成时判为噪声丢弃，夹在真话里的语气词不受影响（可关）；
 - 📝 **长句完整拼接**：讯飞按 VAD 把长语音切成多段，插件会把所有段落按顺序拼回，不会只出后半句；
 - 🪟 **液态玻璃主题**：按钮用 `--dsw-*` 设计令牌 + `--lg-glass-blur` 毛玻璃效果，与 [dsh-liquid-glass](https://github.com/xingyingyuzhui/dsh-liquid-glass) 主题一致。
 
@@ -25,6 +30,9 @@
 
 ```sh
 dsh plugin --profile web add git+https://github.com/charlie-pan/dsh-voice.git
+客户端：
+原版(感谢大佬开发)：github:charlie-pan/dsh-voice
+fix版：github:Karanoyo/dsh-voice-
 ```
 
 重启 dsh web 并硬刷新，打开一个会话即可在输入框右下角看到麦克风按钮。
@@ -39,13 +47,23 @@ dsh plugin --profile web add git+https://github.com/charlie-pan/dsh-voice.git
 | `WEBSpeech_LANG` | `'zh-CN'` | Web Speech 引擎的语言 |
 | `MODEL_ID` | `onnx-community/whisper-small` | Whisper 引擎的模型；中文想更好可换 medium |
 | `TRANSCRIBE_LANGUAGE` | `'chinese'` | Whisper 引擎的转写语言；`null` = 自动检测 |
+| `VAD_ENABLE` | `true` | Silero VAD 总开关：浏览器内语音活动检测，裁掉非语音段；`false` = 只用能量门控 |
+| `VAD_SPEECH_THRESHOLD` | `0.5` | VAD 判定阈值（与 whisper.cpp 同名参数一致），环境噪声大可降到 0.4 |
+| `VAD_MIN_SPEECH_MS` | `250` | 最短语音时长（ms），短于此的孤立声音（咳嗽/碰桌）不算说话 |
+| `VAD_SPEECH_PAD_MS` | `30` | 语音段前后保留缓冲（ms），防止裁剪掐头去尾 |
+| `ENERGY_GATE_ENABLE` | `true` | 能量门控兜底开关（VAD 关闭/加载失败时按自适应底噪裁剪） |
+| `MIN_SPEECH_SEC` | `0.25` | 整段录音最少有效语音秒数，低于则判定「没说话」不送识别 |
+| `FILLER_FILTER_ENABLE` | `true` | 语气词保险网开关：整条结果全是语气词 → 丢弃 |
+| `FILLER_CHARS` | `'嗯恩啊哦噢哈…'` | 语气词表（可自行增删字符） |
+| `WHISPER_NO_SPEECH_THRESHOLD` | `0.6` | Whisper 无语音概率阈值（openai/whisper 官方默认） |
+| `DEBUG_LOG_ENABLE` | `true` | 调试日志总开关：每次录音开始打「功能状态总览」，各功能生效/跳过/失败的原因日志；稳定后可关。异常类日志（warn/error）不受此开关控制，永远输出 |
 
 ### 讯飞凭据（使用 `xfyun` 引擎时）
 
 1. 注册 [讯飞开放平台](https://www.xfyun.cn/) → 控制台 →「我的应用」→ 创建应用（开通**语音听写**），拿到 **APPID / APIKey / APISecret**；
 2. 二选一配置（密钥只存在本机，不进浏览器、不要提交到仓库）：
    - **环境变量**：`XFYUN_APPID` / `XFYUN_APIKEY` / `XFYUN_APISECRET`；
-   - **本地文件**：在插件目录放一个 `xfyun.secret.json`（已被 `.gitignore` 忽略）：
+   - **本地文件**：在插件目录放一个 `xfyun.secret.json`（已被 `.gitignore` 忽略）：`C:\Users\%username%\.dsh\profiles\desktop\node_modules\dsh-voice\`
 
 ```json
 { "appId": "…", "apiKey": "…", "apiSecret": "…" }
@@ -60,6 +78,7 @@ dsh plugin --profile web add git+https://github.com/charlie-pan/dsh-voice.git
 - **识别出"you/thank you"等英文乱码（whisper 引擎）**：`TRANSCRIBE_LANGUAGE` 已默认强制中文；换其他语言改它即可。
 - **长句只出后半段（xfyun 引擎）**：已修复（多段拼接）；若仍出现请反馈。
 - **语音输入没出字但讯飞用量增加**：录音太安静被 VAD 判为无人说话——自动增益已解决大部分情况；建议在 Windows 声音设置里调高麦克风输入音量。
+- **不说话也识别出「嗯嗯啊啊好哈」**：已通过四层修复——Silero VAD 裁剪（只送真语音段）、能量门控兜底、讯飞 `vad_eos` 收回 3000ms（`host.js` 顶部 `XFYUN_VAD_EOS`）、语气词保险网；没说话时直接本地拦截，讯飞配额也不再消耗。若真实语音被误过滤：调低 `VAD_SPEECH_THRESHOLD`（如 0.4）、调低 `MIN_SPEECH_SEC`，或关闭 `FILLER_FILTER_ENABLE` 排查。
 
 ## 🧱 插件结构
 
