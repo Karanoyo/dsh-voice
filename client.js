@@ -94,16 +94,28 @@ window.__ModuleLoader__.load({
     var WHISPER_NO_SPEECH_LOGPROB = -1.0
     // 🎛️ 调试日志总开关（🎲 可选值 False/True）：控制所有 🧪 调试日志——
     //     每次录音开始打「功能状态总览」、各功能生效/跳过/失败的原因日志。
-    //     排查期默认开；稳定后改 False 可关掉刷屏。⚠️ 异常类日志（console.warn/error）
+    //     排查期默认开；⚠️ 异常类日志（console.warn/error）
     //     不受此开关控制，永远输出，保证出问题必留痕。
+    //     🧠 这只是「默认值」：插件选项页（plugins.bundle.config slot 挂的设置卡片）
+    //     的「开启调试日志」开关写入 localStorage 记忆后，apply 启动时读取记忆
+    //     覆盖它（无记忆/记忆非法时才用这里的默认）。
+    //     🛡️ 2025-12 审查修复：此前有 19 处日志直接 console.log 绕过本开关，导致
+    //     「面板关了控制台还在刷」——已全部收编走 debugLog 统一受控。
     var DEBUG_LOG_ENABLE = true
+    // 💾 调试开关的 localStorage 记忆键（命名对齐 MIC_STORAGE_KEY 风格）：
+    //     选项页设置卡片「保存」时写入，apply 启动时读取覆盖上面的默认值
+    var DEBUG_LOG_STORAGE_KEY = 'dsh-voice.debugLog'
 
     // 🎛️ 光标事件追踪开关（🎲 可选值 False/True）：专查「插入后光标跳末尾再跳回」
     //     与「新行插入多一个换行」两个悬案。开启后每次写回识别文本时，在短窗口内
     //     全量监听 selectionchange/scroll/focus/blur/input 事件，带时间戳输出
     //     [dsh-voice-track] 前缀日志，并同步收集到 window.__dshVoiceTrack 数组
     //     （控制台敲 copy(window.__dshVoiceTrack) 可整份导出）。
-    //     ⚠️ 只读观察、绝不修改选区/文本/滚动，零行为影响；定位后改 False 关闭。
+    //     ⚠️ 只读观察、绝不修改选区/文本/滚动，零行为影响。
+    //     🧠 联动语义（2025-12 修正）：追踪跟随 DEBUG_LOG_ENABLE 总开关联动——
+    //     选项页「开启调试日志」开 = 🧪 日志 + track 追踪日志完整输出（与旧版
+    //     完整日志一致）；总开关关 = 追踪会话完全不挂载，零开销零输出。
+    //     本常量只是「追踪专项逃生口」：想保留 🧪 日志但单独关掉追踪时改 False。
     var CURSOR_TRACK_ENABLE = true
     // ⏱️ 追踪观察尾窗 ms：恢复光标(内部延时 60ms) 之后再多盯这么久，
     //     让「跳回原位」和迟到的事件也进时间线
@@ -121,9 +133,47 @@ window.__ModuleLoader__.load({
     // 💡 为什么封装：① 一处改格式全局生效 ② 头部开关免注释代码 ③ 调用处只写正文
     // ⚠️ 仅用于正常流程的「状态/生效/跳过」日志；异常与警告仍直接用
     //    console.warn / console.error，不受开关控制（出问题必留痕）。
+    // 🛡️ 同级别契约（2025-12 用户规约）：选项页「保存」写的就是 DEBUG_LOG_ENABLE
+    //    本尊（saveChanges 里直接赋值），与改头部常量**同一个变量、同一行拦截**，
+    //    关闭时 console.log 完全不执行——绝非"输出后隐藏"。
+    //    （调用方参数拼接的求值语义与头部开关时代逐字节一致，两级开关在此完全同级）
     // ------------------------------------------------------------------
     function debugLog(message) {
       if (DEBUG_LOG_ENABLE) console.log('[dsh-voice] 🧪 ' + message)
+    }
+
+    // ------------------------------------------------------------------
+    // 🧠 调试开关的 localStorage 记忆读写（供选项页设置卡片与 apply 启动使用）
+    // 🛡️ 整个函数体必须包进 try：浏览器「阻止所有 Cookie」等配置下，访问
+    //     window.localStorage 属性本身（含 typeof 解析）就会抛 SecurityError——
+    //     裸露在外会让 apply 抛异常拖垮整个插件（dsh-plugin-scroll-memory 审查
+    //     中翻过同款车，此处为已验证的修复形态）。
+    // ------------------------------------------------------------------
+    function readDebugPref() {
+      try {
+        if (typeof localStorage === 'undefined' || localStorage === null) return null
+        var raw = localStorage.getItem(DEBUG_LOG_STORAGE_KEY)
+        if (raw === '1') return true
+        if (raw === '0') return false
+        return null // 无记录/值非法 → null（调用方用头部默认值）
+      } catch (err) {
+        console.warn('[dsh-voice] 读取调试开关记忆失败：' + err)
+        return null
+      }
+    }
+
+    // 💾 写入调试开关记忆。📤 返回 true=落库成功 / false=失败——供「保存」按钮做
+    //    「先落库再提交」的防假成功判定：写失败时绝不提交任何 UI 状态，按钮保持
+    //    可用可重试，UI 永不假装成功。
+    function writeDebugPref(value) {
+      try {
+        if (typeof localStorage === 'undefined' || localStorage === null) return false
+        localStorage.setItem(DEBUG_LOG_STORAGE_KEY, value === true ? '1' : '0')
+        return true
+      } catch (err) {
+        console.warn('[dsh-voice] 写入调试开关记忆失败：' + err)
+        return false
+      }
     }
     // 🧮 生成「功能状态总览」字符串：✅生效 | ❌关闭 | ➖不适用（连原因一起说清）
     // 💡 为什么动态拼接：各功能的适用性随 ASR_ENGINE 变化，静态表说不准「为什么没生效」
@@ -227,11 +277,11 @@ window.__ModuleLoader__.load({
     function warmup(pipe) {
       if (warmupDone) return Promise.resolve()
       var t = Date.now()
-      console.log('[dsh-voice] 首次初始化模型（创建 ONNX 会话，浏览器 WASM 约 1–2 分钟）…')
+      debugLog('首次初始化模型（创建 ONNX 会话，浏览器 WASM 约 1–2 分钟）…')
       var dummy = new Float32Array(1600) // 0.1s 静音
       return pipe(dummy, TRANSCRIBE_LANGUAGE ? { language: TRANSCRIBE_LANGUAGE } : undefined).then(function () {
         warmupDone = true
-        console.log('[dsh-voice] 模型就绪（' + ((Date.now() - t) / 1000).toFixed(1) + 's）')
+        debugLog('模型就绪（' + ((Date.now() - t) / 1000).toFixed(1) + 's）')
       })
     }
 
@@ -349,8 +399,8 @@ window.__ModuleLoader__.load({
         out.set(keptBlocks[k], writeOffset)
         writeOffset += keptBlocks[k].length
       }
-      console.log(
-        '[dsh-voice] 静音压缩完成: 原时长 ' + (samples.length / 16000).toFixed(1) + 's -> 压缩后 ' +
+      debugLog(
+        '静音压缩完成: 原时长 ' + (samples.length / 16000).toFixed(1) + 's -> 压缩后 ' +
         (out.length / 16000).toFixed(1) + 's (成功消除停顿，杜绝丢字)',
       )
       return out
@@ -475,8 +525,8 @@ window.__ModuleLoader__.load({
           out.set(segAudioList[p], w)
           w += segAudioList[p].length
         }
-        console.log(
-          '[dsh-voice] Silero VAD 裁剪: 原始 ' + (samples.length / 16000).toFixed(1) + 's -> 语音 ' +
+        debugLog(
+          'Silero VAD 裁剪: 原始 ' + (samples.length / 16000).toFixed(1) + 's -> 语音 ' +
           speechSec.toFixed(1) + 's（' + segCount + ' 段），实际送识别 ' + (out.length / 16000).toFixed(1) + 's',
         )
         return out
@@ -533,8 +583,8 @@ window.__ModuleLoader__.load({
       var from = startBlock * BLOCK
       var to = Math.min(samples.length, (endBlock + 1) * BLOCK)
       if (from === 0 && to === samples.length) return samples // 首尾无需裁剪 → 原样返回
-      console.log(
-        '[dsh-voice] 能量门控裁剪: 掐头 ' + (from / 16000).toFixed(1) + 's / 去尾 ' +
+      debugLog(
+        '能量门控裁剪: 掐头 ' + (from / 16000).toFixed(1) + 's / 去尾 ' +
         ((samples.length - to) / 16000).toFixed(1) + 's（底噪 ' + noiseFloor.toFixed(4) + ' 阈值 ' + threshold.toFixed(4) + '）',
       )
       return samples.subarray(from, to)
@@ -611,11 +661,11 @@ window.__ModuleLoader__.load({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ audio: int16ToBase64(pcm) }),
       })
-      console.log('[dsh-voice] xfyun HTTP ->', res.status)
+      debugLog('xfyun HTTP -> ' + res.status)
       var data = await res.json().catch(function () {
         return null
       })
-      console.log('[dsh-voice] xfyun 返回:', JSON.stringify(data))
+      debugLog('xfyun 返回: ' + JSON.stringify(data))
       if (data && data.error) {
         throw new Error(data.error)
       }
@@ -682,9 +732,22 @@ window.__ModuleLoader__.load({
     var 光标追踪_会话进行中 = false // 📍 是否处于一次写回的观察窗口内
     var 光标追踪_监听器表 = [] // 📍 会话期间挂上的临时监听器 [事件名, 处理器]，退出逐一摘除
 
+    // 🛡️ 插桩点守卫（2025-12 用户规约：关闭 = 完全不执行，绝非"跑了再隐藏"）：
+    //    所有 光标追踪_输出(...) 插桩点统一包在本守卫后——总开关或追踪开关任一
+    //    关闭即短路，右侧调用**连同参数里的 DOM 采样构造**（选区快照/块摘要等）
+    //    完全不求值、不执行。JS 参数求值发生在函数拦截之前，只有调用点短路才能
+    //    做到真正的零执行（函数内门只防"忘包守卫的新插桩"，双保险）。
+    function 光标追踪_守卫() {
+      return CURSOR_TRACK_ENABLE === true && DEBUG_LOG_ENABLE === true
+    }
+
     // 💡 统一出口：相对时间戳 + [dsh-voice-track] 前缀 + 控制台 + 内存收集
+    //    🛡️ 总开关彻底拦截（2025-12 用户规约）：DEBUG_LOG_ENABLE 关闭时本函数
+    //    首行即返回——行构造、内存收集、控制台输出**全部不执行**，绝非"跑了再隐藏"。
+    //    语义与头部常量开关完全同级别：CURSOR_TRACK_ENABLE 只是追踪专项逃生口
+    //    （想保留 🧪 日志但单独关追踪时改 False）。
     function 光标追踪_输出(内容) {
-      if (!CURSOR_TRACK_ENABLE) return
+      if (!CURSOR_TRACK_ENABLE || !DEBUG_LOG_ENABLE) return
       var 行 = '[dsh-voice-track] +' + (performance.now() / 1000).toFixed(3) + 's | ' + 内容
       console.log(行)
       try {
@@ -782,27 +845,31 @@ window.__ModuleLoader__.load({
         if (事件类型 === 'scroll') {
           var t = e.target
           var st = t === document ? (document.documentElement || {}).scrollTop : t.scrollTop
-          光标追踪_输出('🖱️ scroll | ' + (t === document ? 'document' : t.tagName || 'root') + '.scrollTop=' + st)
+          if (光标追踪_守卫()) 光标追踪_输出('🖱️ scroll | ' + (t === document ? 'document' : t.tagName || 'root') + '.scrollTop=' + st)
           return
         }
         if (事件类型 === 'input') {
-          光标追踪_输出('⌨️ input | data=' + JSON.stringify(e.data) + ' type=' + e.inputType + ' | ' + 光标追踪_选区快照())
+          if (光标追踪_守卫()) 光标追踪_输出('⌨️ input | data=' + JSON.stringify(e.data) + ' type=' + e.inputType + ' | ' + 光标追踪_选区快照())
           return
         }
         if (事件类型 === 'focus' || 事件类型 === 'blur') {
-          光标追踪_输出('🎯 ' + 事件类型 + ' | ' + 光标追踪_节点描述(e.target))
+          if (光标追踪_守卫()) 光标追踪_输出('🎯 ' + 事件类型 + ' | ' + 光标追踪_节点描述(e.target))
           return
         }
         // selectionchange：最关键事件——光标去了哪，一看便知
-        光标追踪_输出('🔁 selectionchange | ' + 光标追踪_选区快照())
+        if (光标追踪_守卫()) 光标追踪_输出('🔁 selectionchange | ' + 光标追踪_选区快照())
       }
     }
 
     // 💡 开启一次观察会话：挂临时监听 + 记录基线快照（防重入）
+    //    🛡️ 总开关彻底拦截（2025-12 用户规约）：DEBUG_LOG_ENABLE 关闭时直接返回，
+    //    监听器一个都不挂、DOM 快照一张不拍——会话完全不执行，零开销零残留。
+    //    （与头部常量开关同级别：旧版改头部 CURSOR_TRACK_ENABLE=false 的效果，
+    //    现在关 UI 总开关即等同达成，且更彻底——连监听器都不挂）
     function 光标追踪_开启会话(标签) {
-      if (!CURSOR_TRACK_ENABLE || 光标追踪_会话进行中) return
+      if (!CURSOR_TRACK_ENABLE || !DEBUG_LOG_ENABLE || 光标追踪_会话进行中) return
       光标追踪_会话进行中 = true
-      光标追踪_输出('🚦 ====== 追踪会话开始: ' + 标签 + ' ======')
+      if (光标追踪_守卫()) 光标追踪_输出('🚦 ====== 追踪会话开始: ' + 标签 + ' ======')
       var 监听表 = [
         ['selectionchange', 光标追踪_事件处理器('selectionchange')],
         ['scroll', 光标追踪_事件处理器('scroll')],
@@ -816,7 +883,7 @@ window.__ModuleLoader__.load({
         document.addEventListener(监听表[i][0], 监听表[i][1], true)
         光标追踪_监听器表.push([监听表[i][0], 监听表[i][1]])
       }
-      光标追踪_输出('📍 基线快照: ' + 光标追踪_选区快照())
+      if (光标追踪_守卫()) 光标追踪_输出('📍 基线快照: ' + 光标追踪_选区快照())
     }
 
     // 💡 结束观察会话：逐一摘除监听器（保证退出后零残留）
@@ -827,7 +894,7 @@ window.__ModuleLoader__.load({
         document.removeEventListener(光标追踪_监听器表[i][0], 光标追踪_监听器表[i][1], true)
       }
       光标追踪_监听器表 = []
-      光标追踪_输出('🏁 ====== 追踪会话结束: ' + (标签 || '') + ' | 收尾快照: ' + 光标追踪_选区快照() + ' ======')
+      if (光标追踪_守卫()) 光标追踪_输出('🏁 ====== 追踪会话结束: ' + (标签 || '') + ' | 收尾快照: ' + 光标追踪_选区快照() + ' ======')
     }
 
     // ------------------------------------------------------------------
@@ -996,7 +1063,7 @@ window.__ModuleLoader__.load({
             if (光标追踪_会话进行中) {
               var 块清单 = []
               for (var tbi = 0; tbi < blocks.length; tbi++) 块清单.push(光标追踪_块摘要(blocks[tbi]))
-              光标追踪_输出('📐 采样·块清单(' + blocks.length + ' 个): ' + 块清单.join(' ║ '))
+              if (光标追踪_守卫()) 光标追踪_输出('📐 采样·块清单(' + blocks.length + ' 个): ' + 块清单.join(' ║ '))
             }
 
             for (var bIdx = 0; bIdx < blocks.length; bIdx++) {
@@ -1010,7 +1077,7 @@ window.__ModuleLoader__.load({
                 全文ce += '\n'
                 // 🧪 监控点 A：块分隔 '\n' 追加溯源（仅追踪会话内输出，日常打字零打扰）
                 if (光标追踪_会话进行中) {
-                  光标追踪_输出('📐 采样·块分隔加\\n: 第' + bIdx + '块=' + 光标追踪_块摘要(currBlock) + ' | 加后全文长=' + 全文ce.length)
+                  if (光标追踪_守卫()) 光标追踪_输出('📐 采样·块分隔加\\n: 第' + bIdx + '块=' + 光标追踪_块摘要(currBlock) + ' | 加后全文长=' + 全文ce.length)
                 }
               }
 
@@ -1109,7 +1176,7 @@ window.__ModuleLoader__.load({
                   var isOnlyChild = !块内有文字 || 是末尾占位BR
                   // 🧪 监控点 A：BR 判定全留痕（精准识别空段占位与末尾渲染占位）
                   if (光标追踪_会话进行中) {
-                    光标追踪_输出('📐 采样·BR判定: 块内有文字=' + 块内有文字 + ' | 末尾占位=' + 是末尾占位BR + ' | 父=' + (parentNode && parentNode.tagName) + ' | 块子数=' + currBlock.childNodes.length + ' | 判定=' + (isOnlyChild ? '占位符→不加\\n' : '硬换行→加\\n') + ' | 块=' + 光标追踪_块摘要(currBlock))
+                    if (光标追踪_守卫()) 光标追踪_输出('📐 采样·BR判定: 块内有文字=' + 块内有文字 + ' | 末尾占位=' + 是末尾占位BR + ' | 父=' + (parentNode && parentNode.tagName) + ' | 块子数=' + currBlock.childNodes.length + ' | 判定=' + (isOnlyChild ? '占位符→不加\\n' : '硬换行→加\\n') + ' | 块=' + 光标追踪_块摘要(currBlock))
                   }
                   if (!isOnlyChild) {
                     全文ce += '\n'
@@ -1186,7 +1253,7 @@ window.__ModuleLoader__.load({
 
           // 🧪 监控点 A：采样最终结果（与 dsh 官方 draft 对账用）
           if (光标追踪_会话进行中) {
-            光标追踪_输出('📐 采样·结果: 光标=' + posCe + (选区折叠 ? '' : ' ~ ' + 终点偏移) + ' 全文=' + JSON.stringify(全文ce))
+            if (光标追踪_守卫()) 光标追踪_输出('📐 采样·结果: 光标=' + posCe + (选区折叠 ? '' : ' ~ ' + 终点偏移) + ' 全文=' + JSON.stringify(全文ce))
           }
           return { 找到节点: true, 文本: 全文ce, 光标: posCe, 选区起点: posCe, 选区终点: 终点偏移, 选区折叠: 选区折叠 }
         }
@@ -1280,7 +1347,7 @@ window.__ModuleLoader__.load({
         var 当前排期版本 = ++光标恢复版本_引用.current
         // 🧪 监控点 C：恢复光标被排期（60ms 竞态窗口入场）
         if (光标追踪_会话进行中) {
-          光标追踪_输出('🎯 恢复光标·排期: 目标偏移=' + 目标偏移 + '（版本 ' + 当前排期版本 + '，延时 60ms 等 React/Lexical 重渲染）')
+          if (光标追踪_守卫()) 光标追踪_输出('🎯 恢复光标·排期: 目标偏移=' + 目标偏移 + '（版本 ' + 当前排期版本 + '，延时 60ms 等 React/Lexical 重渲染）')
         }
         // 延时等待 DSH 客户端 React/Lexical 完成 DOM 重新渲染
         setTimeout(function () {
@@ -1288,7 +1355,7 @@ window.__ModuleLoader__.load({
             // 🛡️ 幽灵吸附竞态保护：若 60ms 内用户产生过新的手动点击或按键，放弃强制拉回，尊重用户最新光标
             if (当前排期版本 !== 光标恢复版本_引用.current) {
               if (光标追踪_会话进行中) {
-                光标追踪_输出('🎯 恢复光标·放弃: 用户在排期期间产生了新的手动操作，尊重用户最新光标')
+                if (光标追踪_守卫()) 光标追踪_输出('🎯 恢复光标·放弃: 用户在排期期间产生了新的手动操作，尊重用户最新光标')
               }
               return
             }
@@ -1296,7 +1363,7 @@ window.__ModuleLoader__.load({
             if (!目标 || !目标.节点) return
             // 🧪 监控点 C：60ms 到点——重设选区前的现场（此刻光标在哪、视口滚到哪）
             if (光标追踪_会话进行中) {
-              光标追踪_输出('🎯 恢复光标·执行(60ms到点): 重设前 | ' + 光标追踪_选区快照())
+              if (光标追踪_守卫()) 光标追踪_输出('🎯 恢复光标·执行(60ms到点): 重设前 | ' + 光标追踪_选区快照())
             }
 
             // 1. 原生 textarea 模式
@@ -1456,7 +1523,7 @@ window.__ModuleLoader__.load({
                 sel.addRange(range)
                 // 🧪 监控点 C：选区已重设——验证光标是否精准落回插入点之后
                 if (光标追踪_会话进行中) {
-                  光标追踪_输出('🎯 恢复光标·完成: ' + 光标追踪_选区快照())
+                  if (光标追踪_守卫()) 光标追踪_输出('🎯 恢复光标·完成: ' + 光标追踪_选区快照())
                 }
                 // 🛡️ 视口自适应保护：如果刚才被 focus 误触了归零，立即恢复重设前视口
                 if (滚动容器 && 重设前滚动 >= 0) {
@@ -1500,7 +1567,7 @@ window.__ModuleLoader__.load({
           var sel = window.getSelection ? window.getSelection() : null
           if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) return false
           try { el.focus({ preventScroll: true }) } catch (e) { el.focus() }
-          光标追踪_输出('🚀 原生插入·尝试: 插入=' + JSON.stringify(text) + ' | ' + 光标追踪_选区快照())
+          if (光标追踪_守卫()) 光标追踪_输出('🚀 原生插入·尝试: 插入=' + JSON.stringify(text) + ' | ' + 光标追踪_选区快照())
 
           var 是元素节点 = Boolean(sel.anchorNode && sel.anchorNode.nodeType === 1)
           var ok = false
@@ -1518,7 +1585,7 @@ window.__ModuleLoader__.load({
                   data: text
                 })
                 var 派发结果 = el.dispatchEvent(插入事件)
-                光标追踪_输出('🚀 原生插入·beforeinput 派发完成 (未被取消=' + 派发结果 + ')')
+                if (光标追踪_守卫()) 光标追踪_输出('🚀 原生插入·beforeinput 派发完成 (未被取消=' + 派发结果 + ')')
               }
             } catch (evErr) {
               console.warn('[dsh-voice] beforeinput 派发异常:', evErr && evErr.message)
@@ -1526,7 +1593,7 @@ window.__ModuleLoader__.load({
           } else {
             // 锚点是文本节点（占绝大多数）：维持原有高度稳定的 execCommand 路径
             ok = document.execCommand('insertText', false, text)
-            光标追踪_输出('🚀 原生插入·execCommand 返回: ' + ok)
+            if (光标追踪_守卫()) 光标追踪_输出('🚀 原生插入·execCommand 返回: ' + ok)
           }
           // ✅ 验证插入真的生效：计算动态期望长度（兼容折叠光标插入与高亮选中文字替换），
           //     防「execCommand 返回 true 但 Lexical 拦截未写入」的假成功
@@ -1535,7 +1602,7 @@ window.__ModuleLoader__.load({
           var 期望长度 = (采样结果.找到节点 ? 采样结果.文本.length : 0) - 选区覆盖长度 + text.length
           var 生效 = Boolean(验证采样.找到节点 && 采样结果.找到节点 &&
             验证采样.文本.length === 期望长度)
-          光标追踪_输出('🚀 原生插入·验证: 长度 ' + (采样结果.找到节点 ? 采样结果.文本.length : '?') + ' -> ' + (验证采样.找到节点 ? 验证采样.文本.length : '?') + ' | ' + (生效 ? '✅生效' : '❌未生效'))
+          if (光标追踪_守卫()) 光标追踪_输出('🚀 原生插入·验证: 长度 ' + (采样结果.找到节点 ? 采样结果.文本.length : '?') + ' -> ' + (验证采样.找到节点 ? 验证采样.文本.length : '?') + ' | ' + (生效 ? '✅生效' : '❌未生效'))
           return 生效
         } catch (e) {
           console.warn('[dsh-voice] 原生插入异常，回退老路径:', e && e.message)
@@ -1563,7 +1630,7 @@ window.__ModuleLoader__.load({
         // 🧪 监控点 B：三源对账——dsh 官方 draft vs DOM 采样 vs 本地缓存，
         //     谁多算了换行当场现形（采样串 ≠ 官方 draft 即为序列化器嫌疑）
         if (光标追踪_会话进行中) {
-          光标追踪_输出('⚖️ 三源对账: dsh官方draft=' + JSON.stringify(input && typeof input.draft === 'string' ? input.draft : null) + ' | DOM采样=' + JSON.stringify(采样结果.文本) + ' | 本地缓存=' + JSON.stringify(初始文本_引用.current) + ' | 采样光标=' + 采样结果.光标)
+          if (光标追踪_守卫()) 光标追踪_输出('⚖️ 三源对账: dsh官方draft=' + JSON.stringify(input && typeof input.draft === 'string' ? input.draft : null) + ' | DOM采样=' + JSON.stringify(采样结果.文本) + ' | 本地缓存=' + JSON.stringify(初始文本_引用.current) + ' | 采样光标=' + 采样结果.光标)
         }
 
         // 🚀 B2 根治路径：光标处原生插入优先。成功 → Lexical 自维护选区，
@@ -1577,19 +1644,19 @@ window.__ModuleLoader__.load({
         if (光标处原生插入(采样结果, text)) {
           // 📍 原生路径无「setDraft → 60ms 恢复」竞态，只需刷新本地缓存为插入后最新状态
           实时采样光标()
-          光标追踪_输出('🚀 原生插入·收尾: ' + 光标追踪_选区快照())
+          if (光标追踪_守卫()) 光标追踪_输出('🚀 原生插入·收尾: ' + 光标追踪_选区快照())
           // 🧪 尾窗：盯 CURSOR_TRACK_TAIL_MS 毫秒，确认无滚动、无选区跳变
           setTimeout(function () {
             光标追踪_结束会话('appendText·原生插入')
           }, CURSOR_TRACK_TAIL_MS)
           return
         }
-        console.log('[dsh-voice] 原生插入不可用/未生效，回退 setDraft 全量写回路径')
+        debugLog('原生插入不可用/未生效，回退 setDraft 全量写回路径')
         // 🪂 还原快照：清除失败尝试期间被中间态污染的光标/文本引用
         //    （Lexical 已把裸文本回滚，引用必须回到尝试前的忠实值再走老路径）
         光标位置_引用.current = 尝试前光标
         初始文本_引用.current = 尝试前文本
-        光标追踪_输出('🪂 回退 setDraft 路径（原生插入返回 false，光标引用已还原为 ' + 尝试前光标 + '）')
+        if (光标追踪_守卫()) 光标追踪_输出('🪂 回退 setDraft 路径（原生插入返回 false，光标引用已还原为 ' + 尝试前光标 + '）')
 
         var 目标起点 = 光标位置_引用.current
         var 目标终点 = 选区终点_引用.current >= 目标起点 ? 选区终点_引用.current : 目标起点
@@ -1599,26 +1666,26 @@ window.__ModuleLoader__.load({
         // 3. 判断插入或拼接逻辑
         if (!当前文本) {
           // 当前编辑框无内容：直接写入新识别内容
-          console.log('[dsh-voice] 当前编辑框无文本，直接写入新识别内容')
+          debugLog('当前编辑框无文本，直接写入新识别内容')
           最终拼接文本 = text
           恢复光标位置 = text.length
         } else if (目标起点 >= 0 && 目标起点 <= 当前文本.length) {
           // 在有效光标位置插入文本（支持范围选区覆盖替换与 Emoji 码点防截断保护）
           var 安全起点 = 安全截断索引(当前文本, 目标起点)
           var 安全终点 = 安全截断索引(当前文本, Math.min(目标终点, 当前文本.length))
-          console.log('[dsh-voice] 在光标位置 (' + 安全起点 + (安全终点 > 安全起点 ? ' ~ ' + 安全终点 + ' 覆盖替换' : '') + ') 插入文本, 原文长度: ' + 当前文本.length)
+          debugLog('在光标位置 (' + 安全起点 + (安全终点 > 安全起点 ? ' ~ ' + 安全终点 + ' 覆盖替换' : '') + ') 插入文本, 原文长度: ' + 当前文本.length)
           最终拼接文本 = 当前文本.slice(0, 安全起点) + text + 当前文本.slice(安全终点)
           // 💡 光标精准定在刚刚插入文字的正后方，绝不跳到整段末尾！
           恢复光标位置 = 安全起点 + text.length
         } else {
           // 未检测到有效光标，拼接到末尾
-          console.log('[dsh-voice] 未检测到有效光标（' + 目标起点 + '），拼接到文本末尾')
+          debugLog('未检测到有效光标（' + 目标起点 + '），拼接到文本末尾')
           最终拼接文本 = 当前文本 + APPEND_SEPARATOR + text
           恢复光标位置 = 最终拼接文本.length
         }
 
         // 🧪 监控点 C：会话已在函数开头开启（防重入），此处只留 setDraft 前的时间点
-        光标追踪_输出('📤 setDraft 即将调用: 目标串=' + JSON.stringify(最终拼接文本) + ' 目标光标=' + 恢复光标位置)
+        if (光标追踪_守卫()) 光标追踪_输出('📤 setDraft 即将调用: 目标串=' + JSON.stringify(最终拼接文本) + ' 目标光标=' + 恢复光标位置)
 
         // 🛡️ 视口硬锁定：记录写回前的实际滚动高度，防止 Lexical 重建 DOM 时瞬间下滚到底部
         var 目标容器信息 = 查找编辑框目标()
@@ -1634,9 +1701,9 @@ window.__ModuleLoader__.load({
         var 写回前滚动 = 滚动容器 ? 滚动容器.scrollTop : -1
 
         inputActions.setDraft(最终拼接文本)
-        console.log('[dsh-voice] 已写回输入框最终内容:', JSON.stringify(最终拼接文本), '目标光标:', 恢复光标位置)
+        debugLog('已写回输入框最终内容: ' + JSON.stringify(最终拼接文本) + ' 目标光标: ' + 恢复光标位置)
         // 🧪 setDraft 同步返回瞬间（React 尚未重渲染）的选区基线
-        光标追踪_输出('📤 setDraft 同步返回(React未重渲染): ' + 光标追踪_选区快照())
+        if (光标追踪_守卫()) 光标追踪_输出('📤 setDraft 同步返回(React未重渲染): ' + 光标追踪_选区快照())
 
         // 🛡️ 立即恢复视口滚动高度，压制瞬间置底跳动
         if (滚动容器 && 写回前滚动 >= 0 && 滚动容器.scrollTop !== 写回前滚动) {
@@ -1680,7 +1747,7 @@ window.__ModuleLoader__.load({
             选区终点_引用.current = 首次采样.文本.length
           }
         }
-        console.log('[dsh-voice] 录音开始，记录初始光标:', 光标位置_引用.current, '初始文本:', JSON.stringify(初始文本_引用.current))
+        debugLog('录音开始，记录初始光标: ' + 光标位置_引用.current + ' 初始文本: ' + JSON.stringify(初始文本_引用.current))
         try {
           setPhase('loading')
           if (ASR_ENGINE === 'whisper') {
@@ -1707,7 +1774,7 @@ window.__ModuleLoader__.load({
                 if (e.results[i].isFinal) fin += e.results[i][0].transcript
               }
               speechFinalRef.current = fin
-              console.log('[dsh-voice] WebSpeech 中间结果:', JSON.stringify(fin))
+              debugLog('WebSpeech 中间结果: ' + JSON.stringify(fin))
             }
             wrec.onerror = function (e) {
               console.error('[dsh-voice] WebSpeech 错误:', e.error)
@@ -1717,7 +1784,7 @@ window.__ModuleLoader__.load({
             }
             wrec.onend = function () {
               var text = speechFinalRef.current.trim()
-              console.log('[dsh-voice] WebSpeech 结束，文本:', JSON.stringify(text))
+              debugLog('WebSpeech 结束，文本: ' + JSON.stringify(text))
               // 🕳️ 语气词保险网同样覆盖 webspeech：整条纯语气词 → 判为噪声丢弃
               if (text && !(FILLER_FILTER_ENABLE && isPureFiller(text))) {
                 appendText(text)
@@ -1743,7 +1810,7 @@ window.__ModuleLoader__.load({
           var stream = await navigator.mediaDevices.getUserMedia(constraints)
           var audioTrack = stream.getAudioTracks()[0]
           deviceLabelRef.current = audioTrack ? audioTrack.label || '未知设备' : '未知设备'
-          console.log('[dsh-voice] 实际使用的麦克风:', deviceLabelRef.current)
+          debugLog('实际使用的麦克风: ' + deviceLabelRef.current)
           streamRef.current = stream
           chunksRef.current = []
 
@@ -1787,8 +1854,8 @@ window.__ModuleLoader__.load({
             var a = Math.abs(samples[i])
             if (a > maxAmp) maxAmp = a
           }
-          console.log(
-            '[dsh-voice] 录音: blob=' + blob.size + 'B, ' +
+          debugLog(
+            '录音: blob=' + blob.size + 'B, ' +
             (samples.length / 16000).toFixed(1) + 's, 最大振幅=' + maxAmp.toFixed(3),
           )
           if (maxAmp < 0.0005) {
@@ -1816,7 +1883,7 @@ window.__ModuleLoader__.load({
             var b = Math.abs(samples[j])
             if (b > afterPeak) afterPeak = b
           }
-          console.log('[dsh-voice] 增益: 峰值 ' + beforePeak.toFixed(4) + ' -> ' + afterPeak.toFixed(4))
+          debugLog('增益: 峰值 ' + beforePeak.toFixed(4) + ' -> ' + afterPeak.toFixed(4))
           var text = ''
           if (ASR_ENGINE === 'xfyun') {
             text = await transcribeViaXfyun(samples)
@@ -1834,7 +1901,7 @@ window.__ModuleLoader__.load({
             var result = await pipe(samples, genOpts)
             text = extractText(result).trim()
           }
-          console.log('[dsh-voice] 识别结果:', JSON.stringify(text))
+          debugLog('识别结果: ' + JSON.stringify(text))
           if (text) {
             // 🕳️ 语气词保险网：整条结果只由语气词构成 → 判为噪声输出，丢弃不进输入框
             if (FILLER_FILTER_ENABLE && isPureFiller(text)) {
@@ -2085,11 +2152,147 @@ window.__ModuleLoader__.load({
     }
 
     // ------------------------------------------------------------------
-    // Style injection (keyframes only; the rest uses inline styles).
+    // Style injection (keyframes only; the rest uses inline styles) +
+    // 选项页设置卡片样式（1:1 复刻 dsh-univer-office 的官方规范，类名以
+    // dsh-voice-settings 前缀命名空间化，全走 --dsw-alias-* 官方设计令牌）。
     // ------------------------------------------------------------------
     var CSS =
       '@keyframes dsh-voice-spin{to{transform:rotate(360deg)}}' +
-      '@keyframes dsh-voice-pulse{0%,100%{opacity:1}50%{opacity:0.4}}'
+      '@keyframes dsh-voice-pulse{0%,100%{opacity:1}50%{opacity:0.4}}' +
+      '.dsh-voice-settingsCard{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3);padding:14px 16px}' +
+      '.dsh-voice-settingsHead{display:flex;flex-direction:column;gap:4px}' +
+      '.dsh-voice-settingsName{font-size:15px;font-weight:600;line-height:1.4;color:var(--dsw-alias-label-primary)}' +
+      '.dsh-voice-settingsDescription{font-size:13px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}' +
+      '.dsh-voice-settingsBody{border-top:1px solid var(--dsw-alias-border-l2)}' +
+      '.dsh-voice-settingsField{display:flex;flex-direction:column;gap:6px;padding:12px 0}' +
+      '.dsh-voice-settingsFieldHead{display:flex;align-items:center;gap:8px}' +
+      '.dsh-voice-settingsLabel{min-width:0;flex:1;color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:1.5}' +
+      '.dsh-voice-settingsFieldActions{display:inline-flex;align-items:center;gap:8px}' +
+      '.dsh-voice-settingsSwitch{box-sizing:border-box;position:relative;width:36px;height:20px;flex:0 0 auto;padding:2px;border:0;border-radius:10px;background:var(--dsw-alias-border-l3);cursor:pointer;transition:background 120ms ease}' +
+      '.dsh-voice-settingsSwitch_on{background:var(--dsw-alias-brand-primary)}' +
+      '.dsh-voice-settingsSwitch:disabled{cursor:default;opacity:.5}' +
+      '.dsh-voice-settingsSwitch:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}' +
+      '.dsh-voice-settingsSwitchThumb{display:block;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-label-primary-foreground);transition:transform 120ms ease}' +
+      '.dsh-voice-settingsSwitch_on .dsh-voice-settingsSwitchThumb{transform:translateX(16px)}' +
+      '.dsh-voice-settingsHint{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5}' +
+      '.dsh-voice-settingsFooter{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 0 4px;border-top:1px solid var(--dsw-alias-border-l2)}' +
+      '.dsh-voice-settingsDiscard,.dsh-voice-settingsSave{padding:5px 14px;appearance:none;border:1px solid transparent;border-radius:8px;font:inherit;font-size:13px;line-height:1.5;cursor:pointer}' +
+      '.dsh-voice-settingsDiscard{border-color:var(--dsw-alias-border-l2);background:none;color:var(--dsw-alias-label-secondary)}' +
+      '.dsh-voice-settingsDiscard:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}' +
+      '.dsh-voice-settingsSave{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}' +
+      '.dsh-voice-settingsSave:hover:not(:disabled){opacity:.9}' +
+      '.dsh-voice-settingsDiscard:disabled,.dsh-voice-settingsSave:disabled{cursor:default;opacity:.4}' +
+      '.dsh-voice-settingsDiscard:focus-visible,.dsh-voice-settingsSave:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}' +
+      // 🛡️ 减少动效豁免必须同时盖住开关本体与滑块（审查教训：只豁免滑块的话，
+      //    开关底色渐变对「减少动态效果」用户照播）
+      '@media (prefers-reduced-motion:reduce){.dsh-voice-settingsSwitch,.dsh-voice-settingsSwitchThumb{transition:none}}'
+
+    // ------------------------------------------------------------------
+    // ⚙️ 插件选项页设置卡片（官方 plugins.bundle.config slot，key='dsh-voice'）。
+    // 1:1 复刻 dsh-univer-office 的官方卡片规范；实现形态移植自
+    // dsh-plugin-scroll-memory 经四轮审查验证的 配置组件，携带全部审查成果：
+    // ① view:'summary' 防御（官方 keyed 条目契约：摘要位返回单行简介而非整卡）
+    // ② 切换开关用函数式更新（杜绝连点/批处理边缘下的过期闭包丢翻转）
+    // ③ 「是否有修改」用函数实时比较（渲染期常量会让保存按钮逻辑静默失效）
+    // ④ 保存「先落库再提交」防假成功（localStorage 写失败时零提交、按钮保持可重试）
+    // ⑤ 渲染期求值用解构值，事件回调内读状态对实时值（防过期闭包）
+    // ------------------------------------------------------------------
+    function DebugSettingsCard(props) {
+      // 🛡️ 官方契约：详情页以 view:'page' 渲染完整表单，摘要位以 view:'summary'
+      //    渲染单行简介——缺此分支的话官方一旦在卡片列表渲染摘要，整卡会被塞进列表
+      if (props && props.view === 'summary') {
+        return el('span', null, '调试日志默认开启；进入本页可关闭，保存后本浏览器记住选择。')
+      }
+
+      // 📍 已保存生效的持久化状态（savedVal 仅用于渲染期求值：useState 初值）
+      var savedPair = React.useState(DEBUG_LOG_ENABLE === true)
+      var savedVal = savedPair[0]
+      var setSaved = savedPair[1]
+      // 📍 未保存的草稿状态（draftVal 仅用于渲染期求值：开关类名/aria 态；
+      //    💡 事件回调内必须读 draftPair[0] 实时值，绝不能用渲染期捕获的 draftVal）
+      var draftPair = React.useState(savedVal)
+      var draftVal = draftPair[0]
+      var setDraft = draftPair[1]
+
+      // 🧮 实时比较（审查成果：算成渲染期常量会让保存/放弃按钮逻辑静默失效）
+      function hasChanges() {
+        return draftPair[0] !== savedPair[0]
+      }
+
+      // 🔁 拨动开关：仅改变草稿状态
+      //    💡 必须用函数式更新：读取本次渲染捕获的 draftPair[0] 在 React 连点/批处理
+      //    边缘下是过期闭包值，可能丢翻转；函数式让 React 传入最新状态
+      function toggleSwitch() {
+        setDraft(function (current) { return !(current === true) })
+      }
+
+      // 🛑 放弃修改：草稿复位回已存值
+      function discardChanges() {
+        if (!hasChanges()) return
+        setDraft(savedPair[0])
+      }
+
+      // 💾 保存修改：先落库，成功才提交（防假成功）
+      //    🛡️ 顺序关键：必须「写记忆 → setSaved → 改闭包变量」。写失败（隐私模式/
+      //    配额满/被禁）时若先提交 UI，会显示保存成功但记忆没落库——刷新后回到
+      //    旧值，用户被"假成功"欺骗；失败时记 warn 后 return，按钮保持可用可重试。
+      function saveChanges() {
+        if (!hasChanges()) return
+        var next = draftPair[0] === true
+        if (writeDebugPref(next) !== true) {
+          console.warn('[dsh-voice] 保存调试开关失败：记忆写入失败，本次修改未提交（按钮保持可用，可重试）')
+          return
+        }
+        setSaved(next)
+        DEBUG_LOG_ENABLE = next
+        debugLog('选项页配置保存：调试日志已' + (next ? '开启' : '关闭') + '（已写入 localStorage 记忆）')
+      }
+
+      var switchClass = 'dsh-voice-settingsSwitch' + (draftVal ? ' dsh-voice-settingsSwitch_on' : '')
+
+      return el('div', { className: 'dsh-voice-settingsCard' },
+        el('div', { className: 'dsh-voice-settingsHead' },
+          el('span', { className: 'dsh-voice-settingsName' }, '语音输入 (Voice Input)'),
+          el('span', { className: 'dsh-voice-settingsDescription' }, '输入框右下角麦克风按钮：点击录音，再次点击结束，识别文本自动写入输入框。')
+        ),
+        el('div', { className: 'dsh-voice-settingsBody' },
+          el('div', { className: 'dsh-voice-settingsField' },
+            el('div', { className: 'dsh-voice-settingsFieldHead' },
+              el('span', { className: 'dsh-voice-settingsLabel' }, '开启调试日志'),
+              el('div', { className: 'dsh-voice-settingsFieldActions' },
+                el('button', {
+                  type: 'button',
+                  role: 'switch',
+                  className: switchClass,
+                  'aria-checked': draftVal === true,
+                  'aria-label': '开启调试日志',
+                  onClick: toggleSwitch
+                },
+                  el('span', { className: 'dsh-voice-settingsSwitchThumb' })
+                )
+              )
+            ),
+            el('p', { className: 'dsh-voice-settingsHint' },
+              '在控制台输出 [dsh-voice] 🧪 调试日志（功能状态总览、各功能生效/跳过原因），用于排查识别问题；异常类日志不受此开关控制，永远输出。'
+            )
+          ),
+          el('div', { className: 'dsh-voice-settingsFooter' },
+            el('button', {
+              type: 'button',
+              className: 'dsh-voice-settingsDiscard',
+              disabled: !hasChanges(),
+              onClick: discardChanges
+            }, '放弃修改'),
+            el('button', {
+              type: 'button',
+              className: 'dsh-voice-settingsSave',
+              disabled: !hasChanges(),
+              onClick: saveChanges
+            }, '保存')
+          )
+        )
+      )
+    }
 
     function installStyles() {
       if (document.getElementById(STYLE_ID)) return function () {}
@@ -2103,15 +2306,32 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
+      // 🧠 启动时读取用户记忆的调试开关（有记录则覆盖头部默认值；读失败/无记录用默认）
+      var savedPref = readDebugPref()
+      if (savedPref !== null) DEBUG_LOG_ENABLE = savedPref
+
       var slots = ctx.get('slots')
       if (!slots || !React) return
       var disposeStyle = installStyles()
       var disposeSlot = slots.inject(SLOT_NAME, function () {
         return slots.register({ name: SLOT_NAME, id: SLOT_ID, order: 0 }, VoiceControl)
       })
+      // ⚙️ 注册插件选项页的「开启调试日志」设置卡片（官方 plugins.bundle.config
+      //    slot，key=包名；官方 README「配置页」：自带配置的插件把配置渲染在本页）。
+      //    🛡️ 注册失败绝不拖垮麦克风主功能：捕获后仅记 warn。
+      var disposeSettings = null
+      try {
+        disposeSettings = slots.inject('plugins.bundle.config', function () {
+          return slots.register({ name: 'plugins.bundle.config', key: 'dsh-voice' }, DebugSettingsCard)
+        })
+        debugLog('选项页设置卡片已注册（plugins.bundle.config，key=dsh-voice）')
+      } catch (err) {
+        console.warn('[dsh-voice] 注册选项页设置卡片失败：' + err)
+      }
       ctx.effect(function () {
         return function () {
           if (disposeSlot) disposeSlot()
+          if (disposeSettings) disposeSettings()
           disposeStyle()
         }
       })
