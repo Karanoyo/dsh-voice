@@ -1,6 +1,6 @@
 {
   "name": "dsh-voice",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "语音转文字插件 V2（DeepSeek Harness / dsh）：输入框右下角麦克风按钮，讯飞识别引擎（需注册 API）",
   "license": "MIT",
   "type": "module",
