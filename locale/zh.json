@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "语音输入",
+    "description": "输入框右下角麦克风按钮：一键录音转文字，支持讯飞 / WebSpeech / 本地 Whisper 三引擎与麦克风设备选择。"
+  }
+}

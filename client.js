@@ -129,6 +129,19 @@ window.__ModuleLoader__.load({
     var NATIVE_INSERT_ENABLE = true
 
     // ------------------------------------------------------------------
+    // ⌨️ 空格键上屏配置区（2026-10 新增）：录音中按空格 = 停止录音并立即
+    //     转写上屏，等同点击麦克风按钮——三种引擎统一手势（Webspeech/讯飞/
+    //     Whisper 都是停止后才出字，空格即「我说完了，上屏」）。
+    // ------------------------------------------------------------------
+    // 🎛️ 空格键上屏开关（🎲 可选值 False/True）：False = 录音中完全不劫持
+    //     空格键，悬浮提示也不显示（绝不出现「提示了却没功能」）。防误伤放行
+    //     规则见 keydown 监听器注释：输入法合成中/组合键/自动重复/下拉框焦点
+    //     的空格永远不劫持，正常打字零影响。
+    var SPACE_COMMIT_ENABLE = true
+    // 📝 录音中悬浮提示文案（拼接在「点击停止并转写」后显示）
+    var SPACE_COMMIT_HINT = '按空格键让文字上屏'
+
+    // ------------------------------------------------------------------
     // 🔍 统一调试日志函数（DRY：所有调试输出走这一个口，受 DEBUG_LOG_ENABLE 控制）
     // 💡 为什么封装：① 一处改格式全局生效 ② 头部开关免注释代码 ③ 调用处只写正文
     // ⚠️ 仅用于正常流程的「状态/生效/跳过」日志；异常与警告仍直接用
@@ -195,6 +208,8 @@ window.__ModuleLoader__.load({
       } else {
         parts.push('讯飞vad_eos ➖不适用(非xfyun引擎)')
       }
+      // ⌨️ 2026-10 空格上屏：开关状态进总览，录音开始一眼可见本功能是否上阵
+      parts.push('空格上屏 ' + (SPACE_COMMIT_ENABLE ? '✅开(录音中空格=停止并转写)' : '❌关'))
       return parts.join(' | ')
     }
 
@@ -950,6 +965,9 @@ window.__ModuleLoader__.load({
       var deviceLabelRef = React.useRef('')
       var speechRecRef = React.useRef(null)
       var speechFinalRef = React.useRef('')
+      // ⌨️ 2026-10 空格上屏：录音状态镜像 ref——keydown 监听器（挂载一次、
+      //     依赖数组为空）经它读取最新录音状态，规避过期闭包（draftRef 同款模式）
+      var 录音中_引用 = React.useRef(false)
 
       React.useEffect(function () {
         return function () {
@@ -1337,6 +1355,88 @@ window.__ModuleLoader__.load({
             document.removeEventListener('paste', 立即采样处理, true)
             document.removeEventListener('compositionstart', 输入法合成开始, true)
             document.removeEventListener('compositionend', 输入法合成结束, true)
+          }
+        }
+      }, [])
+
+      // ------------------------------------------------------------------
+      // ⌨️ 空格键上屏（2026-10 新增）：录音中按空格 = 停止录音并立即转写上屏
+      //
+      // 🧠 数据流设计图：
+      //   录音中按下空格 ──▶ keydown 捕获监听 ──▶ 五重防误伤放行检查
+      //        │                                       │
+      //        │             ┌──────────────────────────┴──────────────────┐
+      //        │             ▼ 全部通过                                 ▼ 任一不通过
+      //        │     preventDefault + stopPropagation           原样放行不劫持
+      //        │             │                     （正常打字/拼音选词/下拉框展开）
+      //        │             ▼
+      //        │     停止录音并转写()  ◀── 鼠标点击麦克风按钮也走同一入口
+      //        │             │
+      //        │      ┌──────┴──────┐
+      //        │      ▼             ▼
+      //        │  webspeech引擎  讯飞/Whisper引擎
+      //        │  SR.stop()     MediaRecorder.stop()
+      //        │  → onend 上屏  → onstop → finish() 转写上屏
+      //        │      └──────┬──────┘
+      //        └──（识别完成）──▶ appendText(text) → 文字上屏 ✅
+      // ------------------------------------------------------------------
+
+      // 🛑 停止录音并转写：鼠标点击与空格键共用的停止入口（DRY 零分叉）。
+      //     ⚠️ 前置条件：调用方必须已确认处于 recording 状态（onClick 判 phase、
+      //     空格监听器判 录音中_引用），此处不重复判断。
+      //     - webspeech   → SpeechRecognition.stop()，onend 回调统一上屏
+      //     - 讯飞/Whisper → MediaRecorder.stop()，onstop → finish() 转写上屏
+      function 停止录音并转写() {
+        if (ASR_ENGINE === 'webspeech') {
+          var 识别器 = speechRecRef.current
+          if (识别器) 识别器.stop()
+          return
+        }
+        var 录音器 = recorderRef.current
+        if (录音器 && 录音器.state !== 'inactive') 录音器.stop()
+      }
+
+      // ⌨️ 空格键监听：与讯飞/搜狗语音输入的行业惯例一致（说完按空格结束）。
+      //     仅录音中把空格劫持为「上屏手势」，五重防误伤（顺序短路）：
+      //     ① SPACE_COMMIT_ENABLE 总开关关 → 不劫持
+      //     ② 非录音状态 → 不劫持（待机打字零影响）
+      //     ③ 输入法合成中（拼音候选空格=选词键）→ 放行
+      //     ④ Ctrl/Alt/Shift/Meta 组合键 → 放行（那是别人的快捷键）
+      //     ⑤ 按住不放自动重复(e.repeat) / 焦点在下拉框 → 放行
+      React.useEffect(function () {
+        function 空格键按下处理(e) {
+          // ① 总开关（与悬浮提示同一开关：关了就既不劫持也不提示）
+          if (!SPACE_COMMIT_ENABLE) return
+          // ② 仅录音中生效：经 ref 读最新状态（监听器只挂载一次）
+          if (!录音中_引用.current) return
+          // 空格键判定：code=物理键位最稳（输入法开启时 key 可能是 'Process'），
+          // key=' ' 兜底不报 code 的虚拟键盘等场景
+          if (e.code !== 'Space' && e.key !== ' ') return
+          // ④ 组合键放行：修饰键按住时空格属于组合键，不是上屏手势
+          if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return
+          // ⑤ 按住不放的自动重复放行：首次按下已触发停止，重复键不应再触发
+          if (e.repeat) return
+          // ③ 输入法合成中放行：e.isComposing 是键盘事件标准属性 +
+          //    输入法合成中_引用 是 compositionstart/end 全局监听维护的镜像，双保险
+          if (e.isComposing || 输入法合成中_引用.current) return
+          // ⑤ 下拉框焦点放行：select/option 上空格是原生「展开选项」键
+          var 焦点元素 = typeof document !== 'undefined' ? document.activeElement : null
+          var 焦点标签 = 焦点元素 && 焦点元素.tagName ? 焦点元素.tagName : ''
+          //💡 标签 === 精确匹配，O(1) 字符串比较（非 in 查找）
+          if (焦点标签 === 'SELECT' || 焦点标签 === 'OPTION') return
+          // 🛡️ preventDefault：阻止空格落入编辑框成字（Lexical/textarea 均生效）
+          // 🛡️ stopPropagation：拦断宿主可能的空格全局快捷键，录音中空格语义唯一
+          e.preventDefault()
+          e.stopPropagation()
+          debugLog('🚀 空格上屏: 录音中按下空格 → 停止录音并转写（与点击麦克风同一入口）')
+          停止录音并转写()
+        }
+        if (typeof document !== 'undefined' && document.addEventListener) {
+          document.addEventListener('keydown', 空格键按下处理, true)
+        }
+        return function () {
+          if (typeof document !== 'undefined' && document.removeEventListener) {
+            document.removeEventListener('keydown', 空格键按下处理, true)
           }
         }
       }, [])
@@ -1924,26 +2024,26 @@ window.__ModuleLoader__.load({
 
       function onClick() {
         if (phase === 'recording') {
-          if (ASR_ENGINE === 'webspeech') {
-            var wsr = speechRecRef.current
-            if (wsr) wsr.stop()
-            return
-          }
-          var rec = recorderRef.current
-          if (rec && rec.state !== 'inactive') rec.stop()
+          // ⌨️ 2026-10 提取共用入口：鼠标点击与空格键走同一停止函数（DRY 零分叉）
+          停止录音并转写()
         } else if (phase === 'idle') {
           begin()
         }
       }
 
       var recording = phase === 'recording'
+      // 🎯 2026-10 渲染期同步录音状态进 ref：keydown 监听器依赖数组为空、
+      //     只挂载一次，经 ref 读最新录音状态，规避过期闭包（draftRef 同款模式）
+      录音中_引用.current = recording
       var busy = phase === 'loading' || phase === 'transcribing'
       var downloading =
         phase === 'loading' && progress.status === 'progress' && typeof progress.progress === 'number'
       var title = error
         ? error
         : recording
-          ? '点击停止并转写'
+          // ⌨️ 2026-10 录音中追加空格上屏悬浮提示；SPACE_COMMIT_ENABLE 关闭时
+          //     保持原文案（提示与功能同一开关，绝不出现「提示了却没功能」）
+          ? (SPACE_COMMIT_ENABLE ? '点击停止并转写（' + SPACE_COMMIT_HINT + '）' : '点击停止并转写')
           : busy
             ? (phase === 'loading'
               ? (downloading

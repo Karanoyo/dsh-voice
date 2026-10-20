@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Voice Input",
+    "description": "Mic button in the composer for speech-to-text with iFlytek / WebSpeech / local Whisper engines."
+  }
+}
