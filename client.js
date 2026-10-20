@@ -77,6 +77,9 @@ window.__ModuleLoader__.load({
     // 📝 识别结果追加到输入框已有内容末尾时的分隔符（🎲 可选值开关）:
     //   ''  = 直接拼接（什么都不加） | ' ' = 追加一个空格 | '，' = 追加中文逗号 | '\n' = 追加一个换行
     var APPEND_SEPARATOR = ''
+    var XFYUN_CONFIG_URL =
+      (typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:3080') +
+      '/dsh-voice/config'
     var XFYUN_ASR_URL =
       (typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:3080') +
       '/dsh-voice/asr'
@@ -2335,79 +2338,293 @@ window.__ModuleLoader__.load({
       '.dsh-voice-settingsSave:hover:not(:disabled){opacity:.9}' +
       '.dsh-voice-settingsDiscard:disabled,.dsh-voice-settingsSave:disabled{cursor:default;opacity:.4}' +
       '.dsh-voice-settingsDiscard:focus-visible,.dsh-voice-settingsSave:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}' +
+      '.dsh-voice-settingsInput{box-sizing:border-box;width:100%;height:32px;padding:6px 10px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:13px;outline:none;transition:border-color 120ms ease}' +
+      '.dsh-voice-settingsInput:focus{border-color:var(--dsw-alias-brand-primary);outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}' +
+      '.dsh-voice-settingsSectionHead{display:flex;flex-direction:column;gap:4px;padding:14px 0 6px;border-top:1px solid var(--dsw-alias-border-l2)}' +
+      '.dsh-voice-settingsSectionTitle{font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary)}' +
+      '.dsh-voice-settingsEnvBadge{display:inline-block;padding:1px 6px;font-size:11px;border-radius:4px;background:var(--dsw-alias-brand-subtle, rgba(59,130,246,0.15));color:var(--dsw-alias-brand-primary, #3b82f6);margin-left:6px}' +
+      '.dsh-voice-settingsStatusText{font-size:12px;color:var(--dsw-alias-label-tertiary);margin-right:auto}' +
       // 🛡️ 减少动效豁免必须同时盖住开关本体与滑块（审查教训：只豁免滑块的话，
       //    开关底色渐变对「减少动态效果」用户照播）
       '@media (prefers-reduced-motion:reduce){.dsh-voice-settingsSwitch,.dsh-voice-settingsSwitchThumb{transition:none}}'
 
     // ------------------------------------------------------------------
     // ⚙️ 插件选项页设置卡片（官方 plugins.bundle.config slot，key='dsh-voice'）。
-    // 1:1 复刻 dsh-univer-office 的官方卡片规范；实现形态移植自
-    // dsh-plugin-scroll-memory 经四轮审查验证的 配置组件，携带全部审查成果：
+    // 1:1 参考 @liustack/modsearch 的保存 API 系统规范 与 dsh 官方卡片规范：
     // ① view:'summary' 防御（官方 keyed 条目契约：摘要位返回单行简介而非整卡）
-    // ② 切换开关用函数式更新（杜绝连点/批处理边缘下的过期闭包丢翻转）
-    // ③ 「是否有修改」用函数实时比较（渲染期常量会让保存按钮逻辑静默失效）
-    // ④ 保存「先落库再提交」防假成功（localStorage 写失败时零提交、按钮保持可重试）
-    // ⑤ 渲染期求值用解构值，事件回调内读状态对实时值（防过期闭包）
+    // ② 讯飞 ASR 凭据三配置项：appId、apiKey、apiSecret 统一定义与安全管理
+    // ③ 密文遮罩方案：支持 -webkit-text-security: disc 遮蔽输入，防止钥匙串弹窗
+    // ④ 遵循「留空即不改动」安全规范：placeholder 提示「已保存，留空即不改动」
+    // ⑤ 环境变量感知：若来自环境变量则高亮标记提示，防止配置覆盖困惑
+    // ⑥ 实时变更对比与保存状态机（保存中… / 已保存 / 保存失败）
+    // ⑦ 保留原「开启调试日志」开关，保持架构完整无损
     // ------------------------------------------------------------------
-    function DebugSettingsCard(props) {
+    // ==================================================================
+    // 📊 数据结构设计图 (VoiceSettingsCard 状态与通信流动架构)：
+    //   ┌──────────────────────────────────────────────────────────────┐
+    //   │ 客户端 React 状态机                                          │
+    //   │   ├── <凭据摘要 (summary)> ──◀ GET /dsh-voice/config (安全脱敏) │
+    //   │   ├── <凭据草稿 (draftCreds)>: { appId, apiKey, apiSecret }      │
+    //   │   └── <调试日志草稿 (draftDebug)>: boolean                       │
+    //   └──────────────────────────────┬───────────────────────────────┘
+    //                                  │ hasChanges() 实时脏检查
+    //                                  ▼
+    //   ┌──────────────────────────────────────────────────────────────┐
+    //   │ 交互动作与状态判定                                          │
+    //   │   ├── [放弃修改] ──▶ 复原 draftCreds 与 draftDebug           │
+    //   │   └── [保存修改] ──▶ POST /dsh-voice/config ──▶ 原子更新文件    │
+    //   └──────────────────────────────────────────────────────────────┘
+    // ==================================================================
+    /**
+     * 🛡️ 检测当前浏览器是否原生支持 -webkit-text-security 样式
+     * （参考 modsearch：规避原生 password 输入框在 WebKit 下强弹钥匙串气泡的问题）
+     */
+    function 支持_文本安全掩码() {
+      try {
+        return (
+          typeof CSS === 'object' &&
+          CSS !== null &&
+          typeof CSS.supports === 'function' &&
+          CSS.supports('-webkit-text-security', 'disc') === true
+        )
+      } catch {
+        return false
+      }
+    }
+
+    /**
+     * 🔒 获取密文输入框的必要属性集
+     */
+    function 获取_密文输入属性() {
+      if (!支持_文本安全掩码()) {
+        return { type: 'password' }
+      }
+      return {
+        type: 'text',
+        autoComplete: 'off',
+        autoCorrect: 'off',
+        autoCapitalize: 'off',
+        spellCheck: false,
+        style: { WebkitTextSecurity: 'disc' },
+      }
+    }
+
+    function VoiceSettingsCard(props) {
       // 🛡️ 官方契约：详情页以 view:'page' 渲染完整表单，摘要位以 view:'summary'
       //    渲染单行简介——缺此分支的话官方一旦在卡片列表渲染摘要，整卡会被塞进列表
       if (props && props.view === 'summary') {
-        return el('span', null, '调试日志默认开启；进入本页可关闭，保存后本浏览器记住选择。')
+        return el('span', null, '语音输入麦克风控制与讯飞 ASR 接口凭据配置（APPID / APIKey / APISecret）。')
       }
 
-      // 📍 已保存生效的持久化状态（savedVal 仅用于渲染期求值：useState 初值）
-      var savedPair = React.useState(DEBUG_LOG_ENABLE === true)
-      var savedVal = savedPair[0]
-      var setSaved = savedPair[1]
-      // 📍 未保存的草稿状态（draftVal 仅用于渲染期求值：开关类名/aria 态；
-      //    💡 事件回调内必须读 draftPair[0] 实时值，绝不能用渲染期捕获的 draftVal）
-      var draftPair = React.useState(savedVal)
-      var draftVal = draftPair[0]
-      var setDraft = draftPair[1]
+      // 📍 1. 调试日志开关状态（已存值与草稿值）
+      var 调试日志_已存对 = React.useState(DEBUG_LOG_ENABLE === true)
+      var 调试日志_已存值 = 调试日志_已存对[0]
+      var 设置_调试日志已存 = 调试日志_已存对[1]
+      var 调试日志_草稿对 = React.useState(调试日志_已存值)
+      var 调试日志_草稿值 = 调试日志_草稿对[0]
+      var 设置_调试日志草稿 = 调试日志_草稿对[1]
 
-      // 🧮 实时比较（审查成果：算成渲染期常量会让保存/放弃按钮逻辑静默失效）
-      function hasChanges() {
-        return draftPair[0] !== savedPair[0]
+      // 📍 2. 讯飞凭据配置状态（服务端状态、草稿输入值、反馈提示、保存中锁）
+      var 服务端摘要_对 = React.useState(null)
+      var 服务端摘要 = 服务端摘要_对[0]
+      var 设置_服务端摘要 = 服务端摘要_对[1]
+
+      var 凭据草稿_对 = React.useState({ appId: '', apiKey: '', apiSecret: '' })
+      var 凭据草稿 = 凭据草稿_对[0]
+      var 设置_凭据草稿 = 凭据草稿_对[1]
+
+      var 操作提示_对 = React.useState('')
+      var 操作提示 = 操作提示_对[0]
+      var 设置_操作提示 = 操作提示_对[1]
+
+      var 正在保存_对 = React.useState(false)
+      var 是否_正在保存 = 正在保存_对[0]
+      var 设置_正在保存 = 正在保存_对[1]
+
+      // 📥 加载服务端讯飞凭据配置摘要
+      var 加载配置 = React.useCallback(function () {
+        fetch(XFYUN_CONFIG_URL)
+          .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status)
+            return res.json()
+          })
+          .then(function (data) {
+            设置_服务端摘要(data)
+            debugLog('选项页已获取讯飞配置摘要:', data)
+          })
+          .catch(function (err) {
+            console.warn('[dsh-voice] 获取讯飞配置摘要失败:', err)
+            设置_操作提示('加载配置失败')
+          })
+      }, [])
+
+      React.useEffect(function () {
+        加载配置()
+      }, [加载配置])
+
+      // 🧮 实时脏检查：调试开关有变动，或者 3 个凭据输入框有任何输入
+      function 检查_是否有变动() {
+        var 调试变动 = 调试日志_草稿对[0] !== 调试日志_已存对[0]
+        var 草稿对象 = 凭据草稿_对[0]
+        var 凭据变动 =
+          (typeof 草稿对象.appId === 'string' && 草稿对象.appId.trim() !== '') ||
+          (typeof 草稿对象.apiKey === 'string' && 草稿对象.apiKey.trim() !== '') ||
+          (typeof 草稿对象.apiSecret === 'string' && 草稿对象.apiSecret.trim() !== '')
+        return 调试变动 || 凭据变动
       }
 
-      // 🔁 拨动开关：仅改变草稿状态
-      //    💡 必须用函数式更新：读取本次渲染捕获的 draftPair[0] 在 React 连点/批处理
-      //    边缘下是过期闭包值，可能丢翻转；函数式让 React 传入最新状态
-      function toggleSwitch() {
-        setDraft(function (current) { return !(current === true) })
+      // 🔁 拨动调试开关
+      function 切换_调试开关() {
+        设置_调试日志草稿(function (current) { return !(current === true) })
+        设置_操作提示('')
       }
 
-      // 🛑 放弃修改：草稿复位回已存值
-      function discardChanges() {
-        if (!hasChanges()) return
-        setDraft(savedPair[0])
+      // ✏️ 更新单个凭据草稿字段
+      function 更新_草稿字段(字段名, 文本值) {
+        设置_凭据草稿(function (prev) {
+          var next = Object.assign({}, prev)
+          next[字段名] = 文本值
+          return next
+        })
+        设置_操作提示('')
       }
 
-      // 💾 保存修改：先落库，成功才提交（防假成功）
-      //    🛡️ 顺序关键：必须「写记忆 → setSaved → 改闭包变量」。写失败（隐私模式/
-      //    配额满/被禁）时若先提交 UI，会显示保存成功但记忆没落库——刷新后回到
-      //    旧值，用户被"假成功"欺骗；失败时记 warn 后 return，按钮保持可用可重试。
-      function saveChanges() {
-        if (!hasChanges()) return
-        var next = draftPair[0] === true
-        if (writeDebugPref(next) !== true) {
-          console.warn('[dsh-voice] 保存调试开关失败：记忆写入失败，本次修改未提交（按钮保持可用，可重试）')
-          return
+      // 🛑 放弃修改：复原调试开关并清空凭据输入框
+      function 放弃_所有修改() {
+        if (!检查_是否有变动()) return
+        设置_调试日志草稿(调试日志_已存对[0])
+        设置_凭据草稿({ appId: '', apiKey: '', apiSecret: '' })
+        设置_操作提示('')
+      }
+
+      // 💾 保存修改：写入本地配置并热更新生效
+      function 保存_所有修改() {
+        if (!检查_是否有变动() || 是否_正在保存) return
+        设置_正在保存(true)
+        设置_操作提示('保存中…')
+
+        // 1. 处理调试开关变动
+        var 调试变动 = 调试日志_草稿对[0] !== 调试日志_已存对[0]
+        if (调试变动) {
+          var 目标开关 = 调试日志_草稿对[0] === true
+          if (writeDebugPref(目标开关) === true) {
+            设置_调试日志已存(目标开关)
+            DEBUG_LOG_ENABLE = 目标开关
+            debugLog('调试日志配置已保存为: ' + (目标开关 ? '开启' : '关闭'))
+          } else {
+            console.warn('[dsh-voice] 保存调试开关失败：localStorage 写入失败')
+          }
         }
-        setSaved(next)
-        DEBUG_LOG_ENABLE = next
-        debugLog('选项页配置保存：调试日志已' + (next ? '开启' : '关闭') + '（已写入 localStorage 记忆）')
+
+        // 2. 处理讯飞凭据配置提交
+        var 草稿对象 = 凭据草稿_对[0]
+        var 提交载荷 = {}
+        if (typeof 草稿对象.appId === 'string' && 草稿对象.appId.trim() !== '') {
+          提交载荷.appId = 草稿对象.appId.trim()
+        }
+        if (typeof 草稿对象.apiKey === 'string' && 草稿对象.apiKey.trim() !== '') {
+          提交载荷.apiKey = 草稿对象.apiKey.trim()
+        }
+        if (typeof 草稿对象.apiSecret === 'string' && 草稿对象.apiSecret.trim() !== '') {
+          提交载荷.apiSecret = 草稿对象.apiSecret.trim()
+        }
+
+        if (Object.keys(提交载荷).length > 0) {
+          fetch(XFYUN_CONFIG_URL, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(提交载荷),
+          })
+            .then(function (res) {
+              return res.json().then(function (body) {
+                if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status))
+                return body
+              })
+            })
+            .then(function (新摘要) {
+              设置_服务端摘要(新摘要)
+              设置_凭据草稿({ appId: '', apiKey: '', apiSecret: '' })
+              设置_正在保存(false)
+              设置_操作提示('已保存')
+              debugLog('讯飞凭据已成功保存并热更新生效')
+            })
+            .catch(function (err) {
+              console.warn('[dsh-voice] 保存讯飞凭据失败:', err)
+              设置_正在保存(false)
+              设置_操作提示('保存失败: ' + (err && err.message ? err.message : String(err)))
+            })
+        } else {
+          // 无凭据需提交（仅保存了调试开关）
+          设置_正在保存(false)
+          设置_操作提示('已保存')
+        }
       }
 
-      var switchClass = 'dsh-voice-settingsSwitch' + (draftVal ? ' dsh-voice-settingsSwitch_on' : '')
+      // 🧩 辅助渲染：单个凭据输入字段 (对齐 modsearch 的 label + input + hint 布局)
+      function 渲染_凭据输入项(字段键, 标题名, 提示文字, 是否_密文) {
+        var 已配置 = false
+        var 来源说明 = null
+        if (服务端摘要) {
+          if (字段键 === 'appId') {
+            已配置 = 服务端摘要.hasAppId === true
+            来源说明 = 服务端摘要.appIdSource
+          } else if (字段键 === 'apiKey') {
+            已配置 = 服务端摘要.hasApiKey === true
+            来源说明 = 服务端摘要.apiKeySource
+          } else if (字段键 === 'apiSecret') {
+            已配置 = 服务端摘要.hasApiSecret === true
+            来源说明 = 服务端摘要.apiSecretSource
+          }
+        }
+
+        var 占位提示 = 已配置 ? '已保存，留空即不改动' : '未设置，请输入 ' + 标题名
+        var 基础属性 = {
+          className: 'dsh-voice-settingsInput',
+          value: 凭据草稿[字段键] || '',
+          placeholder: 占位提示,
+          onChange: function (e) { 更新_草稿字段(字段键, e.target.value) },
+        }
+        var 密文属性 = 是否_密文 ? 获取_密文输入属性() : { type: 'text' }
+        var 组合属性 = Object.assign({}, 基础属性, 密文属性)
+
+        return el('div', { key: 字段键, className: 'dsh-voice-settingsField' },
+          el('div', { className: 'dsh-voice-settingsFieldHead' },
+            el('span', { className: 'dsh-voice-settingsLabel' }, 标题名),
+            来源说明 === 'env' ? el('span', { className: 'dsh-voice-settingsEnvBadge' }, '环境变量优先') : null
+          ),
+          el('input', 组合属性),
+          el('p', { className: 'dsh-voice-settingsHint' },
+            来源说明 === 'env'
+              ? '该凭据当前由系统环境变量提供，环境变量优先于本地配置。清掉变量后保存的凭据才会生效。'
+              : 提示文字
+          )
+        )
+      }
+
+      var 有修改 = 检查_是否有变动()
+      var 开关类名 = 'dsh-voice-settingsSwitch' + (调试日志_草稿值 ? ' dsh-voice-settingsSwitch_on' : '')
 
       return el('div', { className: 'dsh-voice-settingsCard' },
         el('div', { className: 'dsh-voice-settingsHead' },
           el('span', { className: 'dsh-voice-settingsName' }, '语音输入 (Voice Input)'),
-          el('span', { className: 'dsh-voice-settingsDescription' }, '输入框右下角麦克风按钮：点击录音，再次点击结束，识别文本自动写入输入框。')
+          el('span', { className: 'dsh-voice-settingsDescription' }, '输入框右下角麦克风按钮：点击录音，再次点击结束，转写文本自动追加至输入框。')
         ),
         el('div', { className: 'dsh-voice-settingsBody' },
+          // 🎙️ 分区一：讯飞 API 凭据配置选项 (appId, apiKey, apiSecret)
+          el('div', { className: 'dsh-voice-settingsSectionHead' },
+            el('span', { className: 'dsh-voice-settingsSectionTitle' }, '讯飞语音听写凭据 (iFlytek ASR Credentials)'),
+            el('p', { className: 'dsh-voice-settingsHint' },
+              '配置讯飞开放平台语音听写凭据。凭据安全保存在本地用户配置文件，保存后立即热更新生效，绝不向浏览器泄露。'
+            )
+          ),
+          渲染_凭据输入项('appId', 'APPID', '讯飞开放平台创建应用后分配的 AppID（如 f4ce0fdb）。', false),
+          渲染_凭据输入项('apiKey', 'APIKey', '讯飞开放平台语音听写（流式版）服务接口的 APIKey。', true),
+          渲染_凭据输入项('apiSecret', 'APISecret', '讯飞开放平台语音听写（流式版）服务接口的 APISecret。', true),
+
+          // 🧪 分区二：原有调试日志开关选项
+          el('div', { className: 'dsh-voice-settingsSectionHead' },
+            el('span', { className: 'dsh-voice-settingsSectionTitle' }, '高级选项')
+          ),
           el('div', { className: 'dsh-voice-settingsField' },
             el('div', { className: 'dsh-voice-settingsFieldHead' },
               el('span', { className: 'dsh-voice-settingsLabel' }, '开启调试日志'),
@@ -2415,10 +2632,10 @@ window.__ModuleLoader__.load({
                 el('button', {
                   type: 'button',
                   role: 'switch',
-                  className: switchClass,
-                  'aria-checked': draftVal === true,
+                  className: 开关类名,
+                  'aria-checked': 调试日志_草稿值 === true,
                   'aria-label': '开启调试日志',
-                  onClick: toggleSwitch
+                  onClick: 切换_调试开关
                 },
                   el('span', { className: 'dsh-voice-settingsSwitchThumb' })
                 )
@@ -2428,23 +2645,29 @@ window.__ModuleLoader__.load({
               '在控制台输出 [dsh-voice] 🧪 调试日志（功能状态总览、各功能生效/跳过原因），用于排查识别问题；异常类日志不受此开关控制，永远输出。'
             )
           ),
+
+          // 🏁 底部操作栏 (状态提示 + 放弃修改 + 保存按钮)
           el('div', { className: 'dsh-voice-settingsFooter' },
+            el('span', { className: 'dsh-voice-settingsStatusText' }, 操作提示),
             el('button', {
               type: 'button',
               className: 'dsh-voice-settingsDiscard',
-              disabled: !hasChanges(),
-              onClick: discardChanges
+              disabled: !有修改 || 是否_正在保存,
+              onClick: 放弃_所有修改
             }, '放弃修改'),
             el('button', {
               type: 'button',
               className: 'dsh-voice-settingsSave',
-              disabled: !hasChanges(),
-              onClick: saveChanges
-            }, '保存')
+              disabled: !有修改 || 是否_正在保存,
+              onClick: 保存_所有修改
+            }, 是否_正在保存 ? '保存中…' : '保存')
           )
         )
       )
     }
+
+    // 💡 保持向后兼容：DebugSettingsCard 指向升级后的 VoiceSettingsCard
+    var DebugSettingsCard = VoiceSettingsCard
 
     function installStyles() {
       if (document.getElementById(STYLE_ID)) return function () {}
@@ -2495,3 +2718,4 @@ window.__ModuleLoader__.load({
     return module.exports
   },
 })
+

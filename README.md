@@ -75,15 +75,9 @@ fix版（卸载后再更新）：github:Karanoyo/dsh-voice#main
 ### 讯飞凭据（使用 `xfyun` 引擎时）
 
 1. 注册 [讯飞开放平台](https://www.xfyun.cn/) → 控制台 →「我的应用」→ 创建应用（开通**语音听写**），拿到 **APPID / APIKey / APISecret**；
-2. 二选一配置（密钥只存在本机，不进浏览器、不要提交到仓库）：
-   - **环境变量**：`XFYUN_APPID` / `XFYUN_APIKEY` / `XFYUN_APISECRET`；
-   - **本地文件**：在插件目录放一个 `xfyun.secret.json`（已被 `.gitignore` 忽略）：`C:\Users\%username%\.dsh\profiles\desktop\node_modules\dsh-voice\`
-
-```json
-{ "appId": "…", "apiKey": "…", "apiSecret": "…" }
-```
-
-3. 重启 dsh web（host 半在启动时加载）。
+2. 推荐配置方式（二选一，密钥安全保存在本地，绝不向浏览器泄露）：
+   - **图形化配置（推荐）**：在 DSH 侧边栏「插件」列表进入 **dsh-voice** 详情页，在设置卡片中填入 `APPID`、`APIKey`、`APISecret` 并点击保存。凭据安全保存在本地用户配置文件（`~/.dsh-voice/config.json`），免重启立即热更新生效（对齐 modsearch 规范，插件升级重装绝不丢失）；
+   - **环境变量配置**：通过系统环境变量 `XFYUN_APPID` / `XFYUN_APIKEY` / `XFYUN_APISECRET` 注入（优先级高于本地配置文件）。
 
 ## ❓ 常见问题
 
