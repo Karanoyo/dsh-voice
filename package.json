@@ -1,7 +1,7 @@
 {
   "name": "dsh-voice",
-  "version": "2.1.0",
-  "description": "语音转文字插件 V2（DeepSeek Harness / dsh）：输入框右下角麦克风按钮，讯飞识别引擎（需注册 API）（v2.1.0 修订版：补全展示层元数据与静态依赖声明）",
+  "version": "2.1.1",
+  "description": "语音转文字插件 V2（DeepSeek Harness / dsh）：输入框右下角麦克风按钮，讯飞识别引擎（需注册 API）",
   "license": "MIT",
   "type": "module",
   "main": "./host.js",
@@ -19,7 +19,8 @@
     "README.md",
     "LICENSE",
     "./locale/*.json",
-    "icon.svg"
+    "icon.svg",
+    "images"
   ],
   "repository": {
     "type": "git",
@@ -27,7 +28,8 @@
   },
   "homepage": "https://github.com/charlie-pan/dsh-voice#readme",
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "dsh": ">=0.2.0"
   },
   "keywords": [
     "dsh",
@@ -46,6 +48,7 @@
     },
     "client": {
       "platform": "web",
+      "immediately": true,
       "inject": [
         "slots"
       ]
